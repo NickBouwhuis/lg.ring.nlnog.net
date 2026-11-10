@@ -29,8 +29,12 @@
 """
 
 import argparse
+import hashlib
 import operator
+import re
+import secrets
 import textwrap
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote
 
@@ -41,12 +45,15 @@ from flask import (
     Flask,
     jsonify,
     make_response,
+    redirect,
     render_template,
     request,
     Response,
     send_from_directory,
+    session,
     url_for,
 )
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from markupsafe import escape
 from utils import (
     get_asn_name,
@@ -86,6 +93,61 @@ from api import api
 
 api.config = app.config
 app.register_blueprint(api, url_prefix="/api")
+
+# Browser challenge: a small proof-of-work in front of the pages that query the
+# bgplgd backend, to keep distributed scrapers from overloading it.
+CHALLENGE_PATHS = ("/prefix", "/query/", "/detail/")
+CHALLENGE_DIFFICULTY = app.config.get("CHALLENGE_DIFFICULTY", 4)  # leading hex zeros
+CHALLENGE_PASS_SECONDS = 7 * 24 * 3600
+challenge_signer = URLSafeTimedSerializer(app.secret_key, salt="lg-challenge")
+
+
+def user_agent_hash():
+    """Bind a pass to the User-Agent, so scrapers rotating UAs must solve for each."""
+    return hashlib.sha256(request.headers.get("User-Agent", "").encode()).hexdigest()[:16]
+
+
+@app.before_request
+def require_challenge():
+    """Show the proof-of-work page unless this browser recently solved one."""
+    if not request.path.startswith(CHALLENGE_PATHS):
+        return None
+    if session.get("passed", 0) > time.time() and session.get("ua") == user_agent_hash():
+        return None
+    response = make_response(
+        render_template(
+            "challenge.html",
+            token=challenge_signer.dumps(secrets.token_hex(8)),
+            difficulty=CHALLENGE_DIFFICULTY,
+            next=request.full_path,
+        ),
+        403,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/challenge", methods=["POST"])
+def solve_challenge():
+    """Verify a proof-of-work solution and hand out a pass cookie."""
+    # shortcut: a solved token can be replayed until it expires; fine, a pass cookie can be shared anyway
+    token = request.form.get("token", "")
+    nonce = request.form.get("nonce", "")
+    try:
+        challenge_signer.loads(token, max_age=600)
+    except BadSignature:  # also covers expired tokens
+        abort(400)
+    digest = hashlib.sha256(f"{token}:{nonce}".encode()).hexdigest()
+    if not (nonce.isdigit() and len(nonce) <= 12) or not digest.startswith("0" * CHALLENGE_DIFFICULTY):
+        abort(400)
+    session.permanent = True
+    session["passed"] = int(time.time()) + CHALLENGE_PASS_SECONDS
+    session["ua"] = user_agent_hash()
+    target = request.form.get("next", "/")
+    # only local paths: no "//host", no backslashes, no control or non-ASCII characters
+    if not re.fullmatch(r"/(?![/\\])[\x21-\x5b\x5d-\x7e]*", target):
+        target = "/"
+    return redirect(target)
 
 
 class Datastore:

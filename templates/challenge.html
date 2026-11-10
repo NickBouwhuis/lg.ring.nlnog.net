@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% block body %}
+<h3>Checking your browser&hellip;</h3>
+<p id="challenge-status" role="status">
+    Scrapers have been overloading the looking glass backend, so your browser needs to solve a small puzzle first.
+    This takes a few seconds and is needed about once a week.
+</p>
+<noscript>
+    <div class="alert alert-warning">
+        This check needs JavaScript. For scripted access, please use the
+        <a href="https://github.com/NLNOG/lg.ring.nlnog.net/blob/main/API.md">API</a>.
+    </div>
+</noscript>
+<form id="challenge" method="post" action="{{ url_for('solve_challenge') }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="">
+    <input type="hidden" name="next" value="{{ next }}">
+</form>
+<script>
+(async () => {
+    const form = document.getElementById("challenge");
+    const zeros = "0".repeat({{ difficulty | int }});
+    const encoder = new TextEncoder();
+    if (!window.crypto || !crypto.subtle) {
+        document.getElementById("challenge-status").textContent = "Your browser does not support the check (WebCrypto is needed).";
+        return;
+    }
+    for (let nonce = 0; ; nonce++) {
+        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(form.token.value + ":" + nonce)));
+        const hex = Array.from(digest.slice(0, 8), b => b.toString(16).padStart(2, "0")).join("");
+        if (hex.startsWith(zeros)) {
+            form.nonce.value = nonce;
+            form.submit();
+            return;
+        }
+    }
+})();
+</script>
+{% endblock %}

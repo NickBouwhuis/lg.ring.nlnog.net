@@ -11,3 +11,7 @@ LOOKING_GLASS_NAME = "lg.ring.nlnog.net"
 ARCHIVE_DIR = "archive/"
 DB_FILE = "nlnog-lg.sqlite"
 COMMUNITY_FILE = "community_urls.yml"
+# Browser proof-of-work challenge in front of /prefix, /query and /detail:
+# number of leading hex zeros required (each step is 16x harder). Passes are
+# signed with SESSION_KEY, so make sure that is set to a random secret.
+CHALLENGE_DIFFICULTY = 4
